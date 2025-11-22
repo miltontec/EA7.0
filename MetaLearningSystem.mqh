@@ -2007,8 +2007,9 @@ private:
         }
 
         // Ordenar niveles
-        ArraySort(m_supportLevels, WHOLE_ARRAY, 0, MODE_DESCEND);
-        ArraySort(m_resistanceLevels, WHOLE_ARRAY, 0, MODE_ASCEND);
+        ArraySort(m_supportLevels);
+        ArrayReverse(m_supportLevels);  // MODE_DESCEND en MQL5
+        ArraySort(m_resistanceLevels);  // MODE_ASCEND es el orden por defecto
     }
 
     //+------------------------------------------------------------------+
@@ -5274,6 +5275,80 @@ public:
 
     void SaveToFiles() {
         // Stub: in a real implementation, persist stats/weights
+    }
+
+    // Método público para actualizar EMA de WinRate de un agente
+    void UpdateAgentWinRateEMA(int agentIndex, bool wasWin) {
+        if(agentIndex < 0 || agentIndex >= QUANTUM_MAX_AGENTS) {
+            Print("ERROR: UpdateAgentWinRateEMA - agentIndex fuera de rango: ", agentIndex);
+            return;
+        }
+
+        // Actualizar EMA con alpha = 0.05 (mismo valor que en LearnFromResult)
+        double alpha = 0.05;
+        double sample = wasWin ? 1.0 : 0.0;
+        m_agentWinRateEMA[agentIndex] = (1.0 - alpha) * m_agentWinRateEMA[agentIndex] + alpha * sample;
+
+        // Asegurar rango válido [0.0, 1.0]
+        m_agentWinRateEMA[agentIndex] = MathMax(0.0, MathMin(1.0, m_agentWinRateEMA[agentIndex]));
+    }
+
+    // Método para aprender de un ciclo multi-orden completo
+    void LearnFromMultiOrderCycle(bool success, double cycleProfit, int orderCount,
+                                  bool &agentVoted[], int &agentDirection[],
+                                  int finalDirection, int currentRegime) {
+        // Validar parámetros
+        if(orderCount <= 0 || ArraySize(agentVoted) < QUANTUM_MAX_AGENTS ||
+           ArraySize(agentDirection) < QUANTUM_MAX_AGENTS) {
+            Print("ERROR: LearnFromMultiOrderCycle - parámetros inválidos");
+            return;
+        }
+
+        Print("📚 Aprendiendo de ciclo multi-orden: ",
+              success ? "ÉXITO" : "FALLO",
+              " | Profit: ", cycleProfit,
+              " | Órdenes: ", orderCount);
+
+        // Distribuir aprendizaje entre agentes que votaron
+        double profitPerAgent = cycleProfit / MathMax(1, orderCount);
+
+        for(int i = 0; i < QUANTUM_MAX_AGENTS; i++) {
+            if(!agentVoted[i]) continue;  // Solo procesar agentes que votaron
+
+            // Verificar si el agente votó correctamente
+            bool votedCorrectly = (agentDirection[i] == finalDirection);
+
+            // Actualizar estadísticas del agente
+            m_agentStats[i].trades++;
+
+            if(success && votedCorrectly) {
+                m_agentStats[i].wins++;
+                m_agentStats[i].consecutive_wins++;
+                m_agentStats[i].consecutive_losses = 0;
+                UpdateAgentWinRateEMA(i, true);
+            } else {
+                m_agentStats[i].consecutive_losses++;
+                m_agentStats[i].consecutive_wins = 0;
+                UpdateAgentWinRateEMA(i, false);
+            }
+
+            // Actualizar profit total
+            m_agentStats[i].total_profit += profitPerAgent;
+
+            Print("  └─ ", m_agentNames[i],
+                  " | Trades: ", m_agentStats[i].trades,
+                  " | Wins: ", m_agentStats[i].wins,
+                  " | WR: ", DoubleToString(GetAgentWinRate(i) * 100, 1), "%");
+        }
+
+        // Actualizar performance global del sistema
+        m_totalTrades++;
+        m_lastTradeWasWin = success;
+
+        double alpha = 0.20;
+        double sample = success ? 1.0 : 0.0;
+        m_recentPerformanceEMA = alpha * sample + (1.0 - alpha) * m_recentPerformanceEMA;
+        m_recentPerformanceEMA = MathMax(0.0, MathMin(1.0, m_recentPerformanceEMA));
     }
 
     string GetMasterAgent() {
